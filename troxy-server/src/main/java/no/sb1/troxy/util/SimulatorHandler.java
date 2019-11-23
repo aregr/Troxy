@@ -430,8 +430,7 @@ public class SimulatorHandler extends AbstractHandler {
 
     private List<String> getRestApiHosts() {
         if (restApiHosts != null) return restApiHosts;
-        String[] hostNames = troxy.getRestAPIHostnames();
-        restApiHosts = hostNames != null ? Arrays.asList(hostNames) : Collections.EMPTY_LIST;
+        restApiHosts = troxy.getRestAPIHostnames();
         return restApiHosts;
     }
 }

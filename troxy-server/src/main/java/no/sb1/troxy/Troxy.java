@@ -3,6 +3,7 @@ package no.sb1.troxy;
 import no.sb1.troxy.common.Config;
 import no.sb1.troxy.common.Mode;
 import no.sb1.troxy.http.common.ConnectorAddr;
+import no.sb1.troxy.http.common.DestinationAddr;
 import no.sb1.troxy.http.common.Filter;
 import no.sb1.troxy.jetty.TroxyJettyServer;
 import no.sb1.troxy.jetty.TroxyJettyServer.TroxyJettyServerConfig.TroxyJettyServerConfigBuilder;
@@ -95,7 +96,6 @@ public class Troxy implements Runnable {
     private KeyManager[] proxyKeyManagers = null;
     private boolean proxyForceHttps = false;
 
-
     /**
      * Default constructor.
      *
@@ -135,13 +135,16 @@ public class Troxy implements Runnable {
     private HandlerList getHandlerList(Cache cache) {
         HandlerList handlerList = new HandlerList();
 
-        //Auditing interceptor for logging all requests
-        RequestInterceptor requestInterceptor = new RequestInterceptor();
-        handlerList.addHandler(requestInterceptor);
+        //1. Auditing interceptor for logging all requests
+        handlerList.addHandler(new RequestInterceptor());
 
-        //Enable REST API by default
+        //2. Main handler
+        handlerList.addHandler(new TroxyHandler(getRestApiDestinationAddr(),new SimulatorHandler(this, config, troxyFileHandler, cache)));
+
+        //Enable Troxy REST API by default
         String enableRest = config.getValue("troxy.restapi.enabled");
         if (!"false".equalsIgnoreCase(enableRest)) {
+            HandlerList troxyUIHandlers = new HandlerList();
 
             //Static resource handler for Troxy UI  (html, js etc.)
             ResourceHandler resourceHandler = new ResourceHandler();
@@ -152,9 +155,8 @@ public class Troxy implements Runnable {
                 resourceHandler.setResourceBase(Troxy.class.getClassLoader().getResource("webapp").toExternalForm());
             ContextHandler staticHandler = new ContextHandler();
             staticHandler.setContextPath("/");
-            staticHandler.setVirtualHosts(getRestAPIHostnames());
             staticHandler.setHandler(resourceHandler);
-            handlerList.addHandler(staticHandler);
+            troxyUIHandlers.addHandler(staticHandler);
 
             //Jersey Resource handler for Troxy REST API
             ResourceConfig resourceConfig = new ResourceConfig();
@@ -167,14 +169,13 @@ public class Troxy implements Runnable {
             ServletHolder apiServlet = new ServletHolder(new ServletContainer(resourceConfig));
             apiServlet.setInitOrder(0);
             ServletContextHandler restHandler = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
-            restHandler.setVirtualHosts(getRestAPIHostnames());
             restHandler.setContextPath("/api");
             restHandler.addServlet(apiServlet, "/*");
-            handlerList.addHandler(restHandler);
+            troxyUIHandlers.addHandler(restHandler);
+
+            //3. Troxy UI handler
+            handlerList.addHandler(troxyUIHandlers);
         }
-        //Main handler
-        SimulatorHandler simulatorHandler = new SimulatorHandler(this, config, troxyFileHandler, cache);
-        handlerList.addHandler(simulatorHandler);
         return handlerList;
     }
 
@@ -215,28 +216,14 @@ public class Troxy implements Runnable {
 
 
     public TroxyJettyServer.TroxyJettyServerConfig createConfig() {
-        int port;
-        try {
-            port = Integer.parseInt(config.getValue("http.port", "" + DEFAULT_HTTP_PORT));
-        } catch (NumberFormatException e) {
-            log.warn("Unable to parse HTTP port from configuration, falling back to default port {}", DEFAULT_HTTP_PORT);
-            port = DEFAULT_HTTP_PORT;
-        }
+        int port = getHttpPort(config);
 
         TroxyJettyServerConfigBuilder builder = new TroxyJettyServerConfigBuilder();
         builder.setPort(port);
 
-        final String keyStorePath = config.getValue("https.keystore.file");
-        if (keyStorePath != null && !keyStorePath.isEmpty()) {
-            try {
-                builder.setSecurePort(Integer.parseInt(config.getValue("https.port", "" + DEFAULT_HTTPS_PORT)));
-            } catch (NumberFormatException e) {
-                log.warn("Unable to parse HTTPS port from configuration, falling back to default port {}", DEFAULT_HTTPS_PORT);
-
-                builder.setSecurePort(DEFAULT_HTTPS_PORT);
-            }
-
-            builder.setHttpsKeystoreFile(keyStorePath);
+        if (isHttpsEnabled(config)) {
+            builder.setSecurePort(getHttpsPort(config));
+            builder.setHttpsKeystoreFile(config.getValue("https.keystore.file"));
             builder.setHttpsKeystoreType(config.getValue("https.keystore.type"));
             builder.setHttpsKeystorePassword(config.getValue("https.keystore.password"));
             builder.setHttpsKeystoreAliasKey(config.getValue("https.keystore.alias.key"));
@@ -455,12 +442,48 @@ public class Troxy implements Runnable {
         return keyManager;
     }
 
-    public String[] getRestAPIHostnames() {
+    public List<String> getRestAPIHostnames() {
         String restHostnames = config.getValue("troxy.restapi.hostnames");
-        return restHostnames != null && !restHostnames.isEmpty() ? restHostnames.trim().split("\\s*,\\s*") : null;
+        return restHostnames != null && !restHostnames.isEmpty() ? Arrays.asList(restHostnames.trim().split("\\s*,\\s*")) : Collections.EMPTY_LIST;
     }
 
     public static List<ConnectorAddr> getConnectorAddresses() throws IOException {
         return server.getConnectorAddresses();
+    }
+
+    private static final boolean isHttpsEnabled(final Config config) {
+        final String keyStorePath = config.getValue("https.keystore.file");
+        return keyStorePath != null && !keyStorePath.isEmpty();
+    }
+
+    private static final int getHttpPort(final Config config) {
+        return parsePort(config.getValue("http.port", "" + DEFAULT_HTTP_PORT),DEFAULT_HTTP_PORT,"HTTP");
+    }
+
+    private static final int getHttpsPort(final Config config) {
+        return parsePort(config.getValue("https.port", "" + DEFAULT_HTTPS_PORT),DEFAULT_HTTPS_PORT,"HTTPS");
+    }
+
+    private static final int parsePort(String port, int defaultPort, String protocol) {
+        try {
+            return Integer.parseInt(port);
+        } catch (NumberFormatException e) {
+            log.warn("Unable to parse {} port from configuration, falling back to default port {}", protocol,defaultPort);
+            return defaultPort;
+        }
+    }
+
+    private List<DestinationAddr> getRestApiDestinationAddr() {
+        List<DestinationAddr> retval = new ArrayList<>(4);
+        List<String> restApiHostnames=getRestAPIHostnames();
+        for(String hostname:restApiHostnames) {
+            retval.add(new DestinationAddr("http",hostname,Integer.toString(getHttpPort(config))));
+        }
+        if (isHttpsEnabled(config)) {
+            for(String hostname:restApiHostnames) {
+                retval.add(new DestinationAddr("https",hostname,Integer.toString(getHttpsPort(config))));
+            }
+        }
+        return retval;
     }
 }
