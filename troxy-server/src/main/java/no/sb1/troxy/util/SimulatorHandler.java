@@ -3,6 +3,7 @@ package no.sb1.troxy.util;
 import no.sb1.troxy.Troxy;
 import no.sb1.troxy.common.Config;
 import no.sb1.troxy.common.Mode;
+import no.sb1.troxy.http.common.ConnectorAddr;
 import no.sb1.troxy.http.common.Filter;
 import no.sb1.troxy.http.common.Request;
 import no.sb1.troxy.http.common.Response;
@@ -18,8 +19,7 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.*;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyManagementException;
@@ -40,6 +40,8 @@ public class SimulatorHandler extends AbstractHandler {
     private final Config config;
     private final TroxyFileHandler troxyFileHandler;
     private final Cache cache;
+    private List<Integer> connectorPorts;
+    private List<String> restApiHosts;
 
     /*
      * Set up ignoring certificates and not verifying hostnames.
@@ -314,6 +316,9 @@ public class SimulatorHandler extends AbstractHandler {
         port = troxy.isProxyForceHttps() ? 443 : port;
         URL url = new URL(protocol, request.getHost(), port, pathAndQuery);
 
+        //Ensure we are not creating a local loop by forwarding traffic to ourselves...
+        ensureUrlNotCausingLoop(url);
+
         simLog.info("Connecting to host: {}", url);
         simLog.debug("Request header: {}", request.getHeader());
         simLog.debug("Request content: {}", request.getContent());
@@ -321,7 +326,7 @@ public class SimulatorHandler extends AbstractHandler {
         //Use client side certificate if provided
         if (troxy.getProxyKeyManagers() != null && "https".equalsIgnoreCase(url.getProtocol())) {
             HttpsURLConnection cons = (HttpsURLConnection) con;
-            simLog.info("Using custom SSL truststore: {}, alias: {} when forwarding request",config.getValue("egress.https.keystore.file"),config.getValue("egress.https.keystore.alias.key"));
+            simLog.info("Using custom SSL truststore: {}, alias: {} when forwarding request", config.getValue("egress.https.keystore.file"), config.getValue("egress.https.keystore.alias.key"));
             cons.setSSLSocketFactory(createClientSSLContext().getSocketFactory());
         }
         /* set method */
@@ -393,5 +398,40 @@ public class SimulatorHandler extends AbstractHandler {
         @Override
         public void checkClientTrusted(X509Certificate[] certs, String authType) throws CertificateException {
         }
+    }
+
+    private void ensureUrlNotCausingLoop(URL url) throws IOException {
+        if (url == null) return;
+        if (isSimulatorTarget(url.getHost(), url.getPort())) {
+            simLog.warn("Troxy loop prevention: skipping packet forwarding to {}:{} that could cause a local loop.", url.getHost(), url.getPort());
+            throw new ConnectException("Suggested URL target could cause a loop: "+url.toString());
+        }
+    }
+
+    private boolean isSimulatorTarget(String hostname, int port) throws IOException {
+        InetAddress addr = InetAddress.getByName(hostname);
+        if (addr.isAnyLocalAddress() || addr.isLoopbackAddress()) return true;
+        if (NetworkInterface.getByInetAddress(addr) != null) {
+            if (getConnectorAddrs().contains(port) && !isRestAPIHostName(hostname)) return true;
+        }
+        return false;
+    }
+
+    private boolean isRestAPIHostName(String hostname) {
+        return getRestApiHosts().contains(hostname) || getRestApiHosts().size() == 0 ;
+    }
+
+    private List<Integer> getConnectorAddrs() throws IOException {
+        if (connectorPorts != null) return connectorPorts;
+        List<ConnectorAddr> connectorAddrs = Troxy.getConnectorAddresses();
+        connectorPorts = connectorAddrs.stream().map(ConnectorAddr::getPort).collect(Collectors.toList());
+        return connectorPorts;
+    }
+
+    private List<String> getRestApiHosts() {
+        if (restApiHosts != null) return restApiHosts;
+        String[] hostNames = troxy.getRestAPIHostnames();
+        restApiHosts = hostNames != null ? Arrays.asList(hostNames) : Collections.EMPTY_LIST;
+        return restApiHosts;
     }
 }

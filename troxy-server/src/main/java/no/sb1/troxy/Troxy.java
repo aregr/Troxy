@@ -2,6 +2,7 @@ package no.sb1.troxy;
 
 import no.sb1.troxy.common.Config;
 import no.sb1.troxy.common.Mode;
+import no.sb1.troxy.http.common.ConnectorAddr;
 import no.sb1.troxy.http.common.Filter;
 import no.sb1.troxy.jetty.TroxyJettyServer;
 import no.sb1.troxy.jetty.TroxyJettyServer.TroxyJettyServerConfig.TroxyJettyServerConfigBuilder;
@@ -175,11 +176,6 @@ public class Troxy implements Runnable {
         SimulatorHandler simulatorHandler = new SimulatorHandler(this, config, troxyFileHandler, cache);
         handlerList.addHandler(simulatorHandler);
         return handlerList;
-    }
-
-    private String[] getRestAPIHostnames() {
-        String restHostnames=config.getValue("troxy.restapi.hostnames");
-        return restHostnames != null && !restHostnames.isEmpty() ? restHostnames.trim().split("\\s*,\\s*"): null;
     }
 
     /**
@@ -457,5 +453,14 @@ public class Troxy implements Runnable {
             throw new IllegalStateException("Unable to initialize client key manager", e);
         }
         return keyManager;
+    }
+
+    public String[] getRestAPIHostnames() {
+        String restHostnames = config.getValue("troxy.restapi.hostnames");
+        return restHostnames != null && !restHostnames.isEmpty() ? restHostnames.trim().split("\\s*,\\s*") : null;
+    }
+
+    public static List<ConnectorAddr> getConnectorAddresses() throws IOException {
+        return server.getConnectorAddresses();
     }
 }

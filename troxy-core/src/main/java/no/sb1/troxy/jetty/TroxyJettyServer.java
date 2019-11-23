@@ -1,13 +1,21 @@
 package no.sb1.troxy.jetty;
 
 
+import no.sb1.troxy.http.common.ConnectorAddr;
 import org.eclipse.jetty.server.*;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
+import java.io.IOException;
 import java.net.BindException;
+import java.net.Inet4Address;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.nio.channels.NetworkChannel;
+import java.util.ArrayList;
+import java.util.List;
 
 public class TroxyJettyServer {
 
@@ -15,6 +23,7 @@ public class TroxyJettyServer {
 
 
     Server server;
+    private ServerConnector httpConnector;
     private ServerConnector httpsConnector;
 
 
@@ -32,9 +41,9 @@ public class TroxyJettyServer {
 
         server = new Server();
 
-        if (config.port > 0 ) {
+        if (config.port > 0) {
             /* setup http connector */
-            ServerConnector httpConnector = new ServerConnector(server, new HttpConnectionFactory());
+            httpConnector = new ServerConnector(server, new HttpConnectionFactory());
             httpConnector.setPort(config.port);
             log.info("Troxy HTTP port: " + config.port);
             server.addConnector(httpConnector);
@@ -177,5 +186,34 @@ public class TroxyJettyServer {
                 return new TroxyJettyServer.TroxyJettyServerConfig(port, securePort, httpsKeystoreFile, httpsKeystoreType, httpsKeystorePassword, httpsKeystoreAliasKey, httpsKeystoreAliasPassword);
             }
         }
+    }
+
+    public List<ConnectorAddr> getConnectorAddresses() throws IOException {
+        List<ConnectorAddr> retval = new ArrayList<ConnectorAddr>(2);
+        if (httpConnector != null && httpConnector.isOpen()) {
+            ConnectorAddr connectorAddr = getIPv4ConnectorAddress(httpConnector);
+            if (connectorAddr != null) retval.add(connectorAddr);
+        }
+        if (httpsConnector != null && httpsConnector.isOpen()) {
+            ConnectorAddr connectorAddr = getIPv4ConnectorAddress(httpsConnector);
+            if (connectorAddr != null) retval.add(connectorAddr);
+        }
+        return retval;
+    }
+
+    private static ConnectorAddr getIPv4ConnectorAddress(ServerConnector connector) throws IOException {
+        Object transport = connector.getTransport();
+        if (transport != null && transport instanceof NetworkChannel) {
+            NetworkChannel channel = (NetworkChannel) transport;
+            SocketAddress address = channel.getLocalAddress();
+            if (address != null && address instanceof InetSocketAddress) {
+                InetSocketAddress inetsockaddr = (InetSocketAddress) address;
+                if (inetsockaddr.getAddress() != null && inetsockaddr.getAddress() instanceof Inet4Address) {
+                    Inet4Address inet4Address = (Inet4Address) inetsockaddr.getAddress();
+                    return new ConnectorAddr(connector.getDefaultProtocol(), inet4Address, inetsockaddr.getPort());
+                }
+            }
+        }
+        return null;
     }
 }
